@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>予約管理（確認／キャンセル／日時変更）</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif; margin: 20px; }
+  .card { max-width: 720px; margin: 0 auto; padding: 16px; border: 1px solid #ddd; border-radius: 12px; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  .row { margin: 8px 0; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  button { padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc; background:#f7f7f7; cursor:pointer; }
+  button.primary { background:#2e6df6; color:#fff; border-color:#2e6df6; }
+  .muted { color:#666; font-size: 13px; }
+  .danger { background:#e53935; color:#fff; border-color:#e53935; }
+  .ok { color:#1976d2; }
+  .err { color:#e53935; white-space: pre-wrap; }
+  .grid { display:grid; grid-template-columns: 130px 1fr; gap: 6px 12px; }
+  input[type="datetime-local"] { padding:8px; border:1px solid #ccc; border-radius:6px; width: 100%; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>予約管理</h1>
+  <div id="status" class="row muted">読み込み中…</div>
+
+  <div id="detail" class="row" style="display:none">
+    <div class="grid">
+      <div>予約ID</div><div id="f_resvId">-</div>
+      <div>お名前</div><div id="f_name">-</div>
+      <div>メニュー</div><div id="f_menu">-</div>
+      <div>日時</div><div id="f_datetime">-</div>
+      <div>メール</div><div id="f_email">-</div>
+    </div>
+
+    <div class="btns">
+      <button id="btnConfirm" class="primary">予約を確認（確定）</button>
+      <button id="btnCancel" class="danger">予約をキャンセル</button>
+    </div>
+
+    <div class="row" style="margin-top:16px">
+      <div class="muted">日時を変更する</div>
+      <div class="row">
+        <!-- ローカル時間で入力 → 送信時に +09:00 ISOへ変換 -->
+        <input type="datetime-local" id="newDateTime">
+      </div>
+      <div class="btns">
+        <button id="btnReschedule">この日時に変更する</button>
+      </div>
+      <div class="muted">※ 変更後の枠が埋まっている場合はエラーになります。その際は別の日時をお試しください。</div>
+    </div>
+  </div>
+
+  <div id="message" class="row"></div>
+</div>
+
+<script>
+  // ★ あなたのGAS WebアプリURL（必ず /exec）
+  const WEBAPP_URL = 'https://script.google.com/macros/s/xxxxxxxxxxxxxxxx/exec';
+
+  // URL ?token=... を取得
+  const params = new URLSearchParams(location.search);
+  const token = params.get('token');
+
+  const statusEl  = document.getElementById('status');
+  const detailEl  = document.getElementById('detail');
+  const msgEl     = document.getElementById('message');
+
+  const f_resvId  = document.getElementById('f_resvId');
+  const f_name    = document.getElementById('f_name');
+  const f_menu    = document.getElementById('f_menu');
+  const f_dt      = document.getElementById('f_datetime');
+  const f_email   = document.getElementById('f_email');
+
+  const btnConfirm = document.getElementById('btnConfirm');
+  const btnCancel  = document.getElementById('btnCancel');
+  const btnRes     = document.getElementById('btnReschedule');
+  const inputNewDT = document.getElementById('newDateTime');
+
+  if (!token) {
+    statusEl.textContent = 'トークンが見つかりません。メール内リンクからアクセスしてください。';
+  } else {
+    loadDetail();
+  }
+
+  async function loadDetail() {
+    try {
+      statusEl.textContent = '予約情報を取得しています…';
+      // GAS 側の view を JSON で返すように（後述のGAS修正を参照）
+      const url = `${WEBAPP_URL}?op=view&format=json&token=${encodeURIComponent(token)}`;
+      const res = await fetch(url, { method: 'GET' });
+      const txt = await res.text();
+      let json = null; try { json = JSON.parse(txt); } catch(e){}
+      if (!res.ok || !json || !json.ok) {
+        statusEl.innerHTML = '<span class="err">予約情報の取得に失敗しました。リンクが古いか、無効な可能性があります。</span>';
+        console.log('view response:', res.status, txt);
+        return;
+      }
+      statusEl.innerHTML = '<span class="ok">予約情報を読み込みました。</span>';
+      detailEl.style.display = '';
+
+      // 埋め込み
+      f_resvId.textContent = json.data.resvId || '-';
+      f_name.textContent   = json.data.name   || '-';
+      f_menu.textContent   = json.data.menu   || '-';
+      f_dt.textContent     = json.data.datetime || '-';
+      f_email.textContent  = json.data.email  || '-';
+    } catch (e) {
+      statusEl.innerHTML = '<span class="err">通信エラーが発生しました。</span>';
+      console.error(e);
+    }
+  }
+
+  btnConfirm?.addEventListener('click', async () => {
+    if (!confirm('この予約を「確認済み」にします。よろしいですか？')) return;
+    await simpleAction('confirm', '予約を確認しました。');
+  });
+
+  btnCancel?.addEventListener('click', async () => {
+    if (!confirm('この予約をキャンセルします。よろしいですか？')) return;
+    await simpleAction('cancel', '予約をキャンセルしました。');
+  });
+
+  btnRes?.addEventListener('click', async () => {
+    const val = inputNewDT.value; // "YYYY-MM-DDTHH:mm"
+    if (!val) {
+      alert('変更後の日時を入力してください。');
+      return;
+    }
+    // ローカル→ "+09:00" ISO へ（日本前提）
+    const newIso = val + ':00+09:00';
+    await rescheduleAction(newIso);
+  });
+
+  async function simpleAction(op, successMsg) {
+    try {
+      msgEl.textContent = '処理中…';
+      const url = `${WEBAPP_URL}?op=${encodeURIComponent(op)}&token=${encodeURIComponent(token)}&format=json`;
+      const res = await fetch(url, { method: 'GET' });
+      const txt = await res.text();
+      let json = null; try { json = JSON.parse(txt); } catch(e){}
+      if (!res.ok || !json || !json.ok) {
+        msgEl.innerHTML = `<span class="err">失敗：${(json && json.error) || '不明なエラー'}</span>`;
+        console.log(op, res.status, txt);
+        return;
+      }
+      msgEl.innerHTML = `<span class="ok">${successMsg}</span>`;
+      // 反映のため再読込
+      await loadDetail();
+    } catch (e) {
+      msgEl.innerHTML = '<span class="err">通信エラーが発生しました。</span>';
+      console.error(e);
+    }
+  }
+
+  async function rescheduleAction(newStartIso) {
+    try {
+      msgEl.textContent = '日時変更を処理中…';
+      const url = `${WEBAPP_URL}?op=reschedule&token=${encodeURIComponent(token)}&newStartIso=${encodeURIComponent(newStartIso)}&format=json`;
+      const res = await fetch(url, { method: 'GET' });
+      const txt = await res.text();
+      let json = null; try { json = JSON.parse(txt); } catch(e){}
+      if (!res.ok || !json || !json.ok) {
+        msgEl.innerHTML = `<span class="err">日時変更に失敗しました：${(json && json.error) || '枠が埋まっている／無効なリンクの可能性'}</span>`;
+        console.log('reschedule', res.status, txt);
+        return;
+      }
+      msgEl.innerHTML = `<span class="ok">日時を変更しました。</span>`;
+      await loadDetail();
+    } catch (e) {
+      msgEl.innerHTML = '<span class="err">通信エラーが発生しました。</span>';
+      console.error(e);
+    }
+  }
+</script>
+</body>
+</html>
